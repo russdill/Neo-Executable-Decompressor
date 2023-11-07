@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# Copyright Russ Dill, 2021. russ.dill@gmail.com
+# Copyright Russ Dill, 2021-2023. russ.dill@gmail.com
 
 # Uses the data header provided by neolite to attempt to reconstruct the
 # original DLL, or at least a workable version.
@@ -9,9 +9,6 @@ import sys
 import pefile
 import struct
 import zlib
-import base64
-import bz2
-import unicorn
 
 def hexdump(src, length=16, sep='.'):
     FILTER = ''.join([(len(repr(chr(x))) == 3) and chr(x) or sep for x in range(256)])
@@ -103,77 +100,133 @@ class neolite_header:
         offset += 16*self.section_info_count
         self.header_size = offset - self.header_offset
 
-neocomp = bz2.decompress(base64.b64decode(
-    # Pretty sure neocomp is a proprietary algorithm. If anyone wants to reverse
-    # engineer it and get rid of the unicorn dependency, be my guest.
-    'QlpoOTFBWSZTWZ/EZ80ABRB////zyecUTRlfP6l//5/Wv9//+v0PBj0hYW/pPFnvf/n90APp7Dnu'
-    'e7tZPeZ3vQxUjU0amDET1GEaNNDE2p6QekaaZGmhoZPUNDQNAaAMQNMjCZDIyH6U0ZNino1Gj9UG'
-    '9UGSTKeKKep6mmmEYQyDQMRo0ZDIGQaGCDIMBMjIAGTIxDJoYRo00YgZMQ0DESij0mjR6T1A09T0'
-    'gaDIyBoNNGgZA0BkYQaAAaAyAYJoGBMmgyANNDAbUiESek9T9E1B6jIPUDJkA0GgaMmgBhDRoAAA'
-    'AA0GgAAyBkBo0B6gJJKR6Q0E/VHpMmNJoA00MINoCA00eoA0Bk0YmEAMhowQADQ0yZBkBkPSMYb7'
-    'krRkeLAeHsXnx++fOm/eEifQMzJy5Pq8vygS/Bg0naow+Rptcy61r+P1rdc9kLXve1zHwoFve9zk'
-    'K4Fqa9qoIRAegA7YQtQlGuhtYCGOZDXDXDWxwY5kED1veiOdh99RWZkBCiABNykM4RATCcMgeJAA'
-    'ckQBgZMwDAMkUEkAEkiSkCPeYcV1hWQY4z7A9JBETn3fV/nLidaCZwtGhRqozA/ssuyyyWQ7KBat'
-    'GmmuDvTKJEskz3SlIGrQd3VLoZHOy/tC5RIGUoKopsAh0azdElUrBBpP28jZsatzqd7qHtPNQpqt'
-    'yrQkB9MjvNzvkcu4Pdoi/o9Hh/jQ+ErSJiwPRVx27rhbS5fi2T2PKQu7ww0uYAI+ezmnJkuv4ggi'
-    'ggkEXB/9ONeEUEkkwYRXDBOimAdk7pJOwYNAGSf2DFI+5wcwR7EYRU1FpoKchQSHgldN1gS8ae3v'
-    'gBOEmZGNoh5iG2vQiTcIUW7r27yCZLBPQbAEUCIUZvJRz2X60iVmV9nGkP4CHAh8C2VECIPwjyXQ'
-    'fh9uFKMjmrYeF4vwAyMdZBKiU2JbEKOKS5UeXhrEGZi5mqJHvhSyfozxkewupv84QBnQAYYHwp9l'
-    'hhkCyaZsJA0IiMZTGa55YKAPvgqongukeEokSkSptXX18CiilsJ7EILLJClAnaYsLEREEYGeiF+e'
-    'ATpxvpFUdGUkVSoFbOreJ2IcWdYN4eeKES9CGUcoxgyFKSmwPLmluTxOREkKnAoUB5sYTDsCWiQO'
-    'UTogEbp0AkEvQxFa5gTl4UhjsxIwEDHKNHCXnRMIBlpN4cU6DJRjEmEEgkknGTlnDJ2ZKDGNFBXd'
-    'j2B5TqTTL9GdrcM5OZFBnM5iSQE4CNIakc7/Ao+fddudIkk8C8EYiqbBAEV9JdjXOTMygQBen5t5'
-    '2wkfpnSkyEkgghMGK3+cIS5+PAYhigQEJDZEEIOrUgQ2FREbWCeHhMRHnUMQgGl+8fep9BFUUgsG'
-    'gTklSMCLlRw3iy2UmJD7IcwMM/L/kYYUAVbIjzLpTCSrRDAYBLsMW77OrlPzb3PpY5ilgKiwkkwD'
-    'MIenxgp4LEoeIUQkm5BvykcGFSEmNmPUMyEhSIDy5JcucaQEEEEUEEklKaIXRB4jOVtBLByBr1RS'
-    'pwFHHoEREH1NeY0gSOiSNqcIkaaZ1LdRFqSRiufN+2QBrEYJJF4XGBxUAAkRc8TYxP94d9ZadZDz'
-    '9NzczfMc5vQwZD/i7kinChIT+Iz5oA=='
-))
+class Neocomp:
+    def read_offset(self):
+        self.pos += 1
+        return self.b[self.pos - 1]
 
-def neo_uncompress_loose(data, usize, strict=False):
-    mu = unicorn.Uc(unicorn.UC_ARCH_X86, unicorn.UC_MODE_32)
-    mu.mem_map(0, 0x31000, perms=unicorn.UC_PROT_READ|unicorn.UC_PROT_EXEC|unicorn.UC_PROT_WRITE)
-    mu.mem_write(0, neocomp)
+    def read_command(self):
+        if not self.command_word:
+            d = int.from_bytes(self.b[self.pos:self.pos+4], 'little')
+            self.pos += 4
+            self.command_word = [(d >> n) & 0xf for n in range(0, 32, 4)]
+        return self.command_word.pop(0)
 
-    ret_addr = len(neocomp)
-    stack = 0x8000
-    src_addr = 0x10000
-    dst_addr = 0x18000
-    scratch = 0x20000
+    def read_flag(self):
+        if not self.flag_word:
+            d = int.from_bytes(self.b[self.pos:self.pos+4], 'little')
+            self.pos += 4
+            self.flag_word = [(d >> n) & 1 for n in range(0, 32)]
+        return self.flag_word.pop(0)
 
-    n = 0
-    ret = b''
-    while len(ret) < usize:
-        if n + 2 > len(data):
-            raise Exception(f'{n=:x} {len(data)=:x} {len(ret)=:x} {usize=:x}')
-
-        code_word = int.from_bytes(data[n:n+2], 'little');
-        n += 2
-
-        if code_word & 0x8000:
-            mu.mem_write(src_addr, data[n:n+0x8000])
-            mu.mem_write(dst_addr, bytes(0x8000))
-            mu.mem_write(stack, struct.pack('<IIII', ret_addr, dst_addr, src_addr, scratch))
-            mu.reg_write(unicorn.x86_const.UC_X86_REG_ESP, stack)
-            mu.emu_start(0, ret_addr, count=(code_word & 0x7fff) * 100)
-            out_bytes = mu.reg_read(unicorn.x86_const.UC_X86_REG_EAX)
-            if out_bytes > 0x8000:
-                raise Exception(f'{out_bytes=:x}')
-            ret += mu.mem_read(dst_addr, out_bytes)
-            n += code_word & 0x7fff
+    def back(self, b, n):
+        w = self.offsets[-(b + 1)]
+        self.offsets.append(len(self.out))
+        if w == len(self.out) - 1:
+            self.out += bytes([self.out[-1]] * n)
         else:
-            if n + code_word + 1 > len(data):
-                raise Exception
-            ret += data[n:n+code_word+1]
-            n += code_word + 1
+            while n:
+                x = min(n, len(self.out) - w)
+                self.out += self.out[w:w + n]
+                n -= x
+                w += x
 
-    if len(ret) > usize and (strict or ret[usize:] != bytes(len(ret) - usize)):
-        raise Exception(f'{len(ret)=:x} {usize=:x}')
+    def copy_literals(self, n):
+        self.offsets.extend(range(len(self.out), len(self.out) + n))
+        self.out += self.b[self.pos:self.pos + n]
+        self.pos += n
 
-    return ret[:usize], n
+    def terminate(self):
+        self.done = True
+
+    def back_base(self, offset, n):
+        self.back(self.read_offset() + offset, n)
+
+    def back_extend16(self, n):
+        offset = self.read_command()
+        if offset == 0:
+            offset = self.read_command() + 16
+        self.back_base(offset * 256, n)
+
+    def back_offset0(self, n):
+        if self.read_flag():
+            self.back_extend16(n)
+        else:
+            self.back_base(0, n)
+
+    def next_command(self):
+        match self.read_command():
+            case 0: self.back_base(0, 3)
+            case 1: self.back_base(0, 4)
+            case 2: self.back_base(0, 5)
+            case 3: self.back_base(256, 3)
+            case 4:
+                command = self.read_command()
+                if command < 2:
+                    self.back(0, command + 3)
+                else:
+                    self.back_base(command * 256, 3)
+            case 5: self.back_extend16(4)
+            case 6: self.back_extend16(5)
+            case 7: self.back_offset0(6)
+            case 8: self.back_offset0(self.read_flag() + 7)
+            case 9: self.back_offset0(self.read_flag() * 2 + self.read_flag() + 9)
+            case 10: self.copy_literals(1)
+            case 11: self.copy_literals(2)
+            case 12: self.copy_literals(self.read_flag() + 3)
+            case 13: self.copy_literals(self.read_flag() * 2 + self.read_flag() + 5)
+            case 14: self.copy_literals(self.read_command() + 9)
+            case 15:
+                if self.read_flag():
+                    if self.read_flag():
+                        offset = self.read_offset()
+                        if offset == 255:
+                            self.terminate()
+                        else:
+                            self.back_offset0(offset + 29)
+                    else:
+                        self.copy_literals(self.read_offset() + 25)
+                else:
+                    self.back_offset0(self.read_command() + 13)
+
+    def reset(self):
+        self.done = False
+        self.command_word = []
+        self.flag_word = []
+        self.offsets = []
+
+    def unpack(self, b, offset=0, csize=None, usize=None):
+        csize = len(b) if csize is None else csize
+        self.pos = offset
+        self.out = bytearray()
+        self.b = b
+        while self.pos < csize and (usize is None or len(self.out) < usize):
+            code_word = int.from_bytes(self.b[self.pos:self.pos + 2], 'little')
+            self.pos += 2
+            if code_word & 0x8000:
+                chunk_csize = code_word - 0x8000
+                self.reset()
+                orig_pos = self.pos
+                while not self.done:
+                    self.next_command()
+                    assert self.pos - orig_pos <= chunk_csize
+                assert self.pos - orig_pos == chunk_csize
+            else:
+                self.out += self.b[self.pos:self.pos + code_word + 1]
+                self.pos += code_word + 1
+        if usize is not None and len(self.out) < usize:
+            self.out += bytes(usize - len(self.out))
+
+        return self.out, self.pos
+
+def neo_uncompress_loose(data, usize):
+    return Neocomp().unpack(data, usize=usize)
 
 def neo_uncompress(data, usize):
-    ret, n = neo_uncompress_loose(data, usize, strict=True)
+    ret, n = Neocomp().unpack(data, usize=usize)
+
+    if len(ret) != usize:
+        raise Exception(f'{len(ret)=:x} {usize=:x}')
 
     if n != len(data):
         raise Exception(f'{len(data)=:x} {n=:x}')
